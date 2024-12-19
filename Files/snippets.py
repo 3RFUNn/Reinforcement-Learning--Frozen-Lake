@@ -1,5 +1,9 @@
 import numpy as np
 import contextlib
+import torch
+import torch.nn as nn
+import torch.optim as optim
+from collections import deque
 
 # Configures numpy print options
 @contextlib.contextmanager
@@ -293,7 +297,6 @@ def q_learning(env, max_episodes, eta, gamma, epsilon, seed=None):
 class LinearWrapper:
     def __init__(self, env):
         self.env = env
-        
         self.n_actions = self.env.n_actions
         self.n_states = self.env.n_states
         self.n_features = self.n_actions * self.n_states
@@ -303,20 +306,16 @@ class LinearWrapper:
         for a in range(self.n_actions):
             i = np.ravel_multi_index((s, a), (self.n_states, self.n_actions))
             features[a, i] = 1.0
-          
         return features
     
     def decode_policy(self, theta):
         policy = np.zeros(self.env.n_states, dtype=int)
         value = np.zeros(self.env.n_states)
-        
         for s in range(self.n_states):
             features = self.encode_state(s)
             q = features.dot(theta)
-            
             policy[s] = np.argmax(q)
             value[s] = np.max(q)
-        
         return policy, value
         
     def reset(self):
@@ -324,164 +323,172 @@ class LinearWrapper:
     
     def step(self, action):
         state, reward, done = self.env.step(action)
-        
         return self.encode_state(state), reward, done
     
     def render(self, policy=None, value=None):
         self.env.render(policy, value)
-        
+
 def linear_sarsa(env, max_episodes, eta, gamma, epsilon, seed=None):
     random_state = np.random.RandomState(seed)
-    
     eta = np.linspace(eta, 0, max_episodes)
     epsilon = np.linspace(epsilon, 0, max_episodes)
-    
     theta = np.zeros(env.n_features)
     
     for i in range(max_episodes):
         features = env.reset()
-        
         q = features.dot(theta)
-
-        # TODO:
+        if random_state.rand() < epsilon[i]:
+            a = random_state.choice(env.n_actions)
+        else:
+            a = random_state.choice(np.flatnonzero(q == q.max()))
+        
+        done = False
+        while not done:
+            next_features, reward, done = env.step(a)
+            next_q = next_features.dot(theta)
+            if random_state.rand() < epsilon[i]:
+                next_a = random_state.choice(env.n_actions)
+            else:
+                next_a = random_state.choice(np.flatnonzero(next_q == next_q.max()))
+            
+            theta += eta[i] * (reward + gamma * next_q[next_a] - q[a]) * features[a]
+            features, q, a = next_features, next_q, next_a
     
     return theta
-    
+
 def linear_q_learning(env, max_episodes, eta, gamma, epsilon, seed=None):
     random_state = np.random.RandomState(seed)
-    
     eta = np.linspace(eta, 0, max_episodes)
     epsilon = np.linspace(epsilon, 0, max_episodes)
-    
     theta = np.zeros(env.n_features)
     
     for i in range(max_episodes):
         features = env.reset()
-        
-        # TODO:
-
-    return theta    
+        done = False
+        while not done:
+            q = features.dot(theta)
+            if random_state.rand() < epsilon[i]:
+                a = random_state.choice(env.n_actions)
+            else:
+                a = random_state.choice(np.flatnonzero(q == q.max()))
+            
+            next_features, reward, done = env.step(a)
+            next_q = next_features.dot(theta)
+            delta = reward - q[a]
+            delta += gamma * next_q.max() if not done else 0
+            theta += eta[i] * delta * features[a]
+            features = next_features
+    
+    return theta
 
 class FrozenLakeImageWrapper:
     def __init__(self, env):
         self.env = env
-
         lake = self.env.lake
-
         self.n_actions = self.env.n_actions
         self.state_shape = (4, lake.shape[0], lake.shape[1])
-
+        
         lake_image = [(lake == c).astype(float) for c in ['&', '#', '$']]
-
-        self.state_image = {lake.absorbing_state: 
-                            np.stack([np.zeros(lake.shape)] + lake_image)}
+        self.state_image = {self.env.absorbing_state: np.stack([np.zeros(lake.shape)] + lake_image)}
+        
         for state in range(lake.size):
-            # TODO: 
-
+            agent_pos = np.zeros(lake.shape)
+            agent_pos[np.unravel_index(state, lake.shape)] = 1.0
+            self.state_image[state] = np.stack([agent_pos] + lake_image)
+    
     def encode_state(self, state):
         return self.state_image[state]
-
+    
     def decode_policy(self, dqn):
         states = np.array([self.encode_state(s) for s in range(self.env.n_states)])
-        q = dqn(states).detach().numpy()  # torch.no_grad omitted to avoid import
-
+        q = dqn(states).detach().numpy()
+        
         policy = q.argmax(axis=1)
         value = q.max(axis=1)
-
+        
         return policy, value
-
+    
     def reset(self):
         return self.encode_state(self.env.reset())
-
+    
     def step(self, action):
         state, reward, done = self.env.step(action)
-
         return self.encode_state(state), reward, done
-
+    
     def render(self, policy=None, value=None):
         self.env.render(policy, value)
-        
-        
-class DeepQNetwork(torch.nn.Module):
-    def __init__(self, env, learning_rate, kernel_size, conv_out_channels, 
-                 fc_out_features, seed):
-        torch.nn.Module.__init__(self)
+
+class DeepQNetwork(nn.Module):
+    def __init__(self, env, learning_rate, kernel_size, conv_out_channels, fc_out_features, seed):
+        super(DeepQNetwork, self).__init__()
         torch.manual_seed(seed)
-
-        self.conv_layer = torch.nn.Conv2d(in_channels=env.state_shape[0], 
-                                          out_channels=conv_out_channels,
-                                          kernel_size=kernel_size, stride=1)
-
+        
+        self.conv_layer = nn.Conv2d(in_channels=env.state_shape[0], out_channels=conv_out_channels, kernel_size=kernel_size, stride=1)
         h = env.state_shape[1] - kernel_size + 1
         w = env.state_shape[2] - kernel_size + 1
-
-        self.fc_layer = torch.nn.Linear(in_features=h * w * conv_out_channels, 
-                                        out_features=fc_out_features)
-        self.output_layer = torch.nn.Linear(in_features=fc_out_features, 
-                                            out_features=env.n_actions)
-
-        self.optimizer = torch.optim.Adam(self.parameters(), lr=learning_rate)
-
+        self.fc_layer = nn.Linear(in_features=h * w * conv_out_channels, out_features=fc_out_features)
+        self.output_layer = nn.Linear(in_features=fc_out_features, out_features=env.n_actions)
+        
+        self.optimizer = optim.Adam(self.parameters(), lr=learning_rate)
+    
     def forward(self, x):
         x = torch.tensor(x, dtype=torch.float)
-        
-        # TODO: 
-
+        x = self.conv_layer(x)
+        x = torch.relu(x)
+        x = x.view(x.size(0), -1)
+        x = self.fc_layer(x)
+        x = torch.relu(x)
+        x = self.output_layer(x)
+        return x
+    
     def train_step(self, transitions, gamma, tdqn):
         states = np.array([transition[0] for transition in transitions])
         actions = np.array([transition[1] for transition in transitions])
         rewards = np.array([transition[2] for transition in transitions])
         next_states = np.array([transition[3] for transition in transitions])
         dones = np.array([transition[4] for transition in transitions])
-
+        
         q = self(states)
-        q = q.gather(1, torch.Tensor(actions).view(len(transitions), 1).long())
+        q = q.gather(1, torch.tensor(actions).view(len(transitions), 1).long())
         q = q.view(len(transitions))
-
+        
         with torch.no_grad():
             next_q = tdqn(next_states).max(dim=1)[0] * (1 - dones)
-
-        target = torch.Tensor(rewards) + gamma * next_q
-
-        # TODO: the loss is the mean squared error between `q` and `target`
-        loss = 0
-
+        
+        target = torch.tensor(rewards) + gamma * next_q
+        
+        loss = nn.MSELoss()(q, target)
+        
         self.optimizer.zero_grad()
         loss.backward()
-        self.optimizer.step()    
-        
-        
+        self.optimizer.step()
+
 class ReplayBuffer:
     def __init__(self, buffer_size, random_state):
         self.buffer = deque(maxlen=buffer_size)
         self.random_state = random_state
-
+    
     def __len__(self):
         return len(self.buffer)
-
+    
     def append(self, transition):
         self.buffer.append(transition)
-
+    
     def draw(self, batch_size):
-        # TODO:
-        
-        
-def deep_q_network_learning(env, max_episodes, learning_rate, gamma, epsilon, 
-                            batch_size, target_update_frequency, buffer_size, 
-                            kernel_size, conv_out_channels, fc_out_features, seed):
+        indices = self.random_state.choice(len(self.buffer), batch_size, replace=False)
+        return [self.buffer[idx] for idx in indices]
+
+def deep_q_network_learning(env, max_episodes, learning_rate, gamma, epsilon, batch_size, target_update_frequency, buffer_size, kernel_size, conv_out_channels, fc_out_features, seed):
     random_state = np.random.RandomState(seed)
     replay_buffer = ReplayBuffer(buffer_size, random_state)
-
-    dqn = DeepQNetwork(env, learning_rate, kernel_size, conv_out_channels, 
-                       fc_out_features, seed=seed)
-    tdqn = DeepQNetwork(env, learning_rate, kernel_size, conv_out_channels, 
-                        fc_out_features, seed=seed)
-
+    
+    dqn = DeepQNetwork(env, learning_rate, kernel_size, conv_out_channels, fc_out_features, seed=seed)
+    tdqn = DeepQNetwork(env, learning_rate, kernel_size, conv_out_channels, fc_out_features, seed=seed)
+    
     epsilon = np.linspace(epsilon, 0, max_episodes)
-
+    
     for i in range(max_episodes):
         state = env.reset()
-
         done = False
         while not done:
             if random_state.rand() < epsilon[i]:
@@ -489,24 +496,21 @@ def deep_q_network_learning(env, max_episodes, learning_rate, gamma, epsilon,
             else:
                 with torch.no_grad():
                     q = dqn(np.array([state]))[0].numpy()
-
                 qmax = max(q)
                 best = [a for a in range(env.n_actions) if np.allclose(qmax, q[a])]
                 action = random_state.choice(best)
-
+            
             next_state, reward, done = env.step(action)
-
             replay_buffer.append((state, action, reward, next_state, done))
-
             state = next_state
-
+            
             if len(replay_buffer) >= batch_size:
                 transitions = replay_buffer.draw(batch_size)
                 dqn.train_step(transitions, gamma, tdqn)
-
+        
         if (i % target_update_frequency) == 0:
             tdqn.load_state_dict(dqn.state_dict())
-
+    
     return dqn
 
 def main():
