@@ -90,8 +90,6 @@ class FrozenLake(Environment):
         
         self.absorbing_state = n_states - 1
         
-        # TODO:
-        
         Environment.__init__(self, n_states, n_actions, max_steps, pi, seed=seed)
         
     def step(self, action):
@@ -102,11 +100,35 @@ class FrozenLake(Environment):
         return state, reward, done
         
     def p(self, next_state, state, action):
-        # TODO:
+        if state == self.absorbing_state:
+            return 1.0 if next_state == self.absorbing_state else 0.0
+        
+        if self.lake_flat[state] in ['#', '$']:
+            return 1.0 if next_state == self.absorbing_state else 0.0
+        
+        if self.random_state.rand() < self.slip:
+            return 1.0 / self.n_states
+        
+        row, col = divmod(state, self.lake.shape[1])
+        if action == 0:  # up
+            row = max(row - 1, 0)
+        elif action == 1:  # left
+            col = max(col - 1, 0)
+        elif action == 2:  # down
+            row = min(row + 1, self.lake.shape[0] - 1)
+        elif action == 3:  # right
+            col = min(col + 1, self.lake.shape[1] - 1)
+        
+        next_state_expected = row * self.lake.shape[1] + col
+        return 1.0 if next_state == next_state_expected else 0.0
     
     def r(self, next_state, state, action):
-        # TODO:
-   
+        if state == self.absorbing_state:
+            return 0.0
+        if self.lake_flat[state] == '$':
+            return 1.0
+        return 0.0
+    
     def render(self, policy=None, value=None):
         if policy is None:
             lake = np.array(self.lake_flat)
@@ -150,70 +172,122 @@ def play(env):
         
 def policy_evaluation(env, policy, gamma, theta, max_iterations):
     value = np.zeros(env.n_states, dtype=np.float)
-
-    # TODO:
-
-    return value
     
+    for _ in range(max_iterations):
+        delta = 0
+        for state in range(env.n_states):
+            v = value[state]
+            action = policy[state]
+            value[state] = sum([env.p(next_state, state, action) * 
+                                (env.r(next_state, state, action) + gamma * value[next_state])
+                                for next_state in range(env.n_states)])
+            delta = max(delta, abs(v - value[state]))
+        if delta < theta:
+            break
+    
+    return value
+
 def policy_improvement(env, value, gamma):
     policy = np.zeros(env.n_states, dtype=int)
     
-    # TODO:
-
-    return policy
+    for state in range(env.n_states):
+        q_values = np.zeros(env.n_actions)
+        for action in range(env.n_actions):
+            q_values[action] = sum([env.p(next_state, state, action) * 
+                                    (env.r(next_state, state, action) + gamma * value[next_state])
+                                    for next_state in range(env.n_states)])
+        policy[state] = np.argmax(q_values)
     
+    return policy
+
 def policy_iteration(env, gamma, theta, max_iterations, policy=None):
     if policy is None:
         policy = np.zeros(env.n_states, dtype=int)
     else:
         policy = np.array(policy, dtype=int)
     
-    # TODO:
-        
-    return policy, value
+    for _ in range(max_iterations):
+        value = policy_evaluation(env, policy, gamma, theta, max_iterations)
+        new_policy = policy_improvement(env, value, gamma)
+        if np.array_equal(policy, new_policy):
+            break
+        policy = new_policy
     
+    value = policy_evaluation(env, policy, gamma, theta, max_iterations)
+    return policy, value
+
 def value_iteration(env, gamma, theta, max_iterations, value=None):
     if value is None:
         value = np.zeros(env.n_states)
     else:
         value = np.array(value, dtype=np.float)
     
-    # TODO:
-
+    for _ in range(max_iterations):
+        delta = 0
+        for state in range(env.n_states):
+            v = value[state]
+            q_values = np.zeros(env.n_actions)
+            for action in range(env.n_actions):
+                q_values[action] = sum([env.p(next_state, state, action) * 
+                                        (env.r(next_state, state, action) + gamma * value[next_state])
+                                        for next_state in range(env.n_states)])
+            value[state] = np.max(q_values)
+            delta = max(delta, abs(v - value[state]))
+        if delta < theta:
+            break
+    
+    policy = policy_improvement(env, value, gamma)
     return policy, value
 
 def sarsa(env, max_episodes, eta, gamma, epsilon, seed=None):
     random_state = np.random.RandomState(seed)
-    
     eta = np.linspace(eta, 0, max_episodes)
     epsilon = np.linspace(epsilon, 0, max_episodes)
-    
     q = np.zeros((env.n_states, env.n_actions))
     
     for i in range(max_episodes):
         s = env.reset()
-        # TODO:
+        if random_state.rand() < epsilon[i]:
+            a = random_state.choice(env.n_actions)
+        else:
+            a = random_state.choice(np.flatnonzero(q[s] == q[s].max()))
+        
+        done = False
+        while not done:
+            s_next, r, done = env.step(a)
+            if random_state.rand() < epsilon[i]:
+                a_next = random_state.choice(env.n_actions)
+            else:
+                a_next = random_state.choice(np.flatnonzero(q[s_next] == q[s_next].max()))
+            
+            q[s, a] += eta[i] * (r + gamma * q[s_next, a_next] - q[s, a])
+            s, a = s_next, a_next
     
     policy = q.argmax(axis=1)
     value = q.max(axis=1)
-        
     return policy, value
-    
+
 def q_learning(env, max_episodes, eta, gamma, epsilon, seed=None):
     random_state = np.random.RandomState(seed)
-    
     eta = np.linspace(eta, 0, max_episodes)
     epsilon = np.linspace(epsilon, 0, max_episodes)
-    
     q = np.zeros((env.n_states, env.n_actions))
     
     for i in range(max_episodes):
         s = env.reset()
-        # TODO:
-        
+        done = False
+        while not done:
+            if random_state.rand() < epsilon[i]:
+                a = random_state.choice(env.n_actions)
+            else:
+                a = random_state.choice(np.flatnonzero(q[s] == q[s].max()))
+            
+            s_next, r, done = env.step(a)
+            q[s, a] += eta[i] * (r + gamma * q[s_next].max() - q[s, a])
+            s = s_next
+    
     policy = q.argmax(axis=1)
     value = q.max(axis=1)
-        
     return policy, value
 
 class LinearWrapper:
