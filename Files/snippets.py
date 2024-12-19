@@ -31,9 +31,11 @@ class EnvironmentModel:
         
     def draw(self, state, action):
         p = [self.p(ns, state, action) for ns in range(self.n_states)]
+        p = np.array(p)
+        p /= p.sum()  # Normalize the probabilities
         next_state = self.random_state.choice(self.n_states, p=p)
         reward = self.r(next_state, state, action)
-        
+    
         return next_state, reward
 
         
@@ -175,7 +177,7 @@ def play(env):
         print('Reward: {0}.'.format(r))
         
 def policy_evaluation(env, policy, gamma, theta, max_iterations):
-    value = np.zeros(env.n_states, dtype=np.float)
+    value = np.zeros(env.n_states, dtype=float)
     
     for _ in range(max_iterations):
         delta = 0
@@ -448,14 +450,20 @@ class DeepQNetwork(nn.Module):
         next_states = np.array([transition[3] for transition in transitions])
         dones = np.array([transition[4] for transition in transitions])
         
+        states = torch.tensor(states, dtype=torch.float)
+        actions = torch.tensor(actions, dtype=torch.long)
+        rewards = torch.tensor(rewards, dtype=torch.float)
+        next_states = torch.tensor(next_states, dtype=torch.float)
+        dones = torch.tensor(dones, dtype=torch.float)
+        
         q = self(states)
-        q = q.gather(1, torch.tensor(actions).view(len(transitions), 1).long())
+        q = q.gather(1, actions.view(len(transitions), 1))
         q = q.view(len(transitions))
         
         with torch.no_grad():
             next_q = tdqn(next_states).max(dim=1)[0] * (1 - dones)
         
-        target = torch.tensor(rewards) + gamma * next_q
+        target = rewards + gamma * next_q
         
         loss = nn.MSELoss()(q, target)
         
@@ -536,68 +544,52 @@ def main():
     gamma = 0.9
     
     print('# Model-based algorithms')
-
     print('')
-
+    
     print('## Policy iteration')
     policy, value = policy_iteration(env, gamma, theta=0.001, max_iterations=128)
     env.render(policy, value)
-
     print('')
-
+    
     print('## Value iteration')
     policy, value = value_iteration(env, gamma, theta=0.001, max_iterations=128)
     env.render(policy, value)
-
     print('')
-
+    
     print('# Model-free algorithms')
     max_episodes = 4000
-
     print('')
-
+    
     print('## Sarsa')
-    policy, value = sarsa(env, max_episodes, eta=0.5, gamma=gamma,
-                          epsilon=0.5, seed=seed)
+    policy, value = sarsa(env, max_episodes, eta=0.5, gamma=gamma, epsilon=0.5, seed=seed)
     env.render(policy, value)
-
     print('')
-
+    
     print('## Q-learning')
-    policy, value = q_learning(env, max_episodes, eta=0.5, gamma=gamma,
-                               epsilon=0.5, seed=seed)
+    policy, value = q_learning(env, max_episodes, eta=0.5, gamma=gamma, epsilon=0.5, seed=seed)
     env.render(policy, value)
-
     print('')
-
+    
     linear_env = LinearWrapper(env)
-
+    
     print('## Linear Sarsa')
-
-    parameters = linear_sarsa(linear_env, max_episodes, eta=0.5, gamma=gamma, 
-                              epsilon=0.5, seed=seed)
+    parameters = linear_sarsa(linear_env, max_episodes, eta=0.5, gamma=gamma, epsilon=0.5, seed=seed)
     policy, value = linear_env.decode_policy(parameters)
     linear_env.render(policy, value)
-
     print('')
-
+    
     print('## Linear Q-learning')
-
-    parameters = linear_q_learning(linear_env, max_episodes, eta=0.5, gamma=gamma, 
-                                   epsilon=0.5, seed=seed)
+    parameters = linear_q_learning(linear_env, max_episodes, eta=0.5, gamma=gamma, epsilon=0.5, seed=seed)
     policy, value = linear_env.decode_policy(parameters)
     linear_env.render(policy, value)
-
     print('')
-
+    
     image_env = FrozenLakeImageWrapper(env)
-
+    
     print('## Deep Q-network learning')
-
-    dqn = deep_q_network_learning(image_env, max_episodes, learning_rate=0.001, 
-                                  gamma=gamma,  epsilon=0.2, batch_size=32,
-                                  target_update_frequency=4, buffer_size=256,
-                                  kernel_size=3, conv_out_channels=4,
-                                  fc_out_features=8, seed=4)
+    dqn = deep_q_network_learning(image_env, max_episodes, learning_rate=0.001, gamma=gamma, epsilon=0.2, batch_size=32, target_update_frequency=4, buffer_size=256, kernel_size=3, conv_out_channels=4, fc_out_features=8, seed=4)
     policy, value = image_env.decode_policy(dqn)
     image_env.render(policy, value)
+
+if __name__ == "__main__":
+    main()
