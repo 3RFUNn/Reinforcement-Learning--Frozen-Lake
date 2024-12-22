@@ -98,9 +98,6 @@ class FrozenLake(Environment):
         
         Environment.__init__(self, n_states, n_actions, max_steps, pi, seed=seed)
         
-        # Load the transition probabilities from the file
-        self.transition_probabilities = np.load('Files/p.npy')
-        
     def step(self, action):
         state, reward, done = Environment.step(self, action)
         
@@ -109,10 +106,7 @@ class FrozenLake(Environment):
         return state, reward, done
         
     def p(self, next_state, state, action):
-        if state == self.absorbing_state:
-            return 1.0 if next_state == self.absorbing_state else 0.0
-        
-        return self.transition_probabilities[next_state, state, action]
+        raise NotImplementedError()
     
     def r(self, next_state, state, action):
         if state == self.absorbing_state:
