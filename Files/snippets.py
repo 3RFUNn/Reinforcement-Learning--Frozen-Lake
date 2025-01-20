@@ -5,6 +5,7 @@ import torch.nn as nn
 import torch.optim as optim
 from collections import deque
 
+import matplotlib.pyplot as plt
 # Configures numpy print options
 @contextlib.contextmanager
 def _printoptions(*args, **kwargs):
@@ -95,6 +96,9 @@ class FrozenLake(Environment):
         pi[np.where(self.lake_flat == '&')[0]] = 1.0
         
         self.absorbing_state = n_states - 1
+
+        # TODO:
+        #self.p_matrix = np.load('p.npy')
         
         Environment.__init__(self, n_states, n_actions, max_steps, pi, seed=seed)
         
@@ -106,12 +110,87 @@ class FrozenLake(Environment):
         return state, reward, done
         
     def p(self, next_state, state, action):
-        raise NotImplementedError()
-    
+        # If the current state is absorbing state
+        if state == self.absorbing_state:
+            probability = 1.0 if next_state == self.absorbing_state else 0.0
+            return probability
+        
+        if self.lake_flat[state] in ['#', '$']:
+            probability = 1.0 if next_state == self.absorbing_state else 0.0
+            return probability
+
+        # Get the row and column coordinates of the current state
+        row, col = divmod(state, self.lake.shape[1])
+        
+        # Initialize the target row and column to the current row and column
+        next_row, next_col = row, col
+
+        # Update the expected target state array according to the action
+        if action == 0:  # UP
+            next_row = max(0, row - 1)
+        elif action == 1:  # LEFT
+            next_col = max(0, col - 1)
+        elif action == 2:  # DOWN
+            next_row = min(self.lake.shape[0] - 1, row + 1)
+        elif action == 3:  # RIGHT
+            next_col = min(self.lake.shape[1] - 1, col + 1)
+
+        next_row_expected, next_col_expected = next_row, next_col
+
+        # Check whether the state is maintained
+        if state == next_state:
+            # Determine whether it is close to the edge
+            if (row == 0 or row == self.lake.shape[0] - 1) or (col == 0 or col == self.lake.shape[1] - 1):
+                # Get close to the edge and check if the action direction hits the wall
+                if action == 0 and row == 0:  # UP
+                    if (row == 0 and col == 0) or (row == 0 and col == self.lake.shape[1] - 1):  # 角落
+                        probability = 1 - self.slip + self.slip / 4 * 2
+                    else:  # Non-corner edges
+                        probability = 1 - self.slip + self.slip / 4
+                elif action == 1 and col == 0:  # LEFT
+                    if (row == 0 and col == 0) or (row == self.lake.shape[0] - 1 and col == 0):  # 角落
+                        probability = 1 - self.slip + self.slip / 4 * 2
+                    else:  # Non-corner edges
+                        probability = 1 - self.slip + self.slip / 4
+                elif action == 2 and row == self.lake.shape[0] - 1:  # DOWN
+                    if (row == self.lake.shape[0] - 1 and col == 0) or (row == self.lake.shape[0] - 1 and col == self.lake.shape[1] - 1):  # 角落
+                        probability = 1 - self.slip + self.slip / 4 * 2
+                    else:  # Non-corner edges
+                        probability = 1 - self.slip + self.slip / 4
+                elif action == 3 and col == self.lake.shape[1] - 1:  # RIGHT
+                    if (row == 0 and col == self.lake.shape[1] - 1) or (row == self.lake.shape[0] - 1 and col == self.lake.shape[1] - 1):  # 角落
+                        probability = 1 - self.slip + self.slip / 4 * 2
+                    else:  # Non-corner edges
+                        probability = 1 - self.slip + self.slip / 4
+                else:
+                    # The direction of movement does not hit the wall and is located at the edges of the four corners
+                    if (row == 0 and col == 0) or (row == 0 and col == self.lake.shape[1] - 1) or \
+                    (row == self.lake.shape[0] - 1 and col == 0) or (row == self.lake.shape[0] - 1 and col == self.lake.shape[1] - 1):
+                        probability = self.slip / 4 * 2  # Four Corners
+                    else:
+                        probability = self.slip / 4  # Non-corner edge locations
+            else:
+                # If not near an edge, returns 0.0
+                probability = 0.0
+            #py = self.p_matrix[next_state, state, action]
+            return probability
+
+        # Check whether it is adjacent
+        if (next_state // self.lake.shape[1], next_state % self.lake.shape[1]) == (next_row_expected, next_col_expected):
+            probability = 1 - self.slip + self.slip / self.n_actions
+            return probability
+        elif (abs(next_state // self.lake.shape[1] - row) + abs(next_state % self.lake.shape[1] - col)) == 1:
+            probability = self.slip / self.n_actions
+            return probability
+
+        # Otherwise returns 0
+        probability = 0.0
+        return probability
+
     def r(self, next_state, state, action):
         if state == self.absorbing_state:
             return 0.0
-        if self.lake_flat[state] == '$':
+        if self.lake_flat[state] == '$' and next_state == self.absorbing_state:
             return 1.0
         return 0.0
     
@@ -199,7 +278,7 @@ def policy_iteration(env, gamma, theta, max_iterations, policy=None):
             break
         policy = new_policy
     
-    value = policy_evaluation(env, policy, gamma, theta, max_iterations)
+    #value = policy_evaluation(env, policy, gamma, theta, max_iterations)
     return policy, value
 
 def value_iteration(env, gamma, theta, max_iterations, value=None):
@@ -230,7 +309,7 @@ def sarsa(env, max_episodes, eta, gamma, epsilon, seed=None):
     eta = np.linspace(eta, 0, max_episodes)
     epsilon = np.linspace(epsilon, 0, max_episodes)
     q = np.zeros((env.n_states, env.n_actions))
-    
+
     for i in range(max_episodes):
         s = env.reset()
         if random_state.rand() < epsilon[i]:
@@ -239,6 +318,7 @@ def sarsa(env, max_episodes, eta, gamma, epsilon, seed=None):
             a = random_state.choice(np.flatnonzero(q[s] == q[s].max()))
         
         done = False
+
         while not done:
             s_next, r, done = env.step(a)
             if random_state.rand() < epsilon[i]:
@@ -247,8 +327,8 @@ def sarsa(env, max_episodes, eta, gamma, epsilon, seed=None):
                 a_next = random_state.choice(np.flatnonzero(q[s_next] == q[s_next].max()))
             
             q[s, a] += eta[i] * (r + gamma * q[s_next, a_next] - q[s, a])
+
             s, a = s_next, a_next
-    
     policy = q.argmax(axis=1)
     value = q.max(axis=1)
     return policy, value
@@ -262,13 +342,16 @@ def q_learning(env, max_episodes, eta, gamma, epsilon, seed=None):
     for i in range(max_episodes):
         s = env.reset()
         done = False
+
         while not done:
+
             if random_state.rand() < epsilon[i]:
                 a = random_state.choice(env.n_actions)
             else:
                 a = random_state.choice(np.flatnonzero(q[s] == q[s].max()))
             
             s_next, r, done = env.step(a)
+
             q[s, a] += eta[i] * (r + gamma * q[s_next].max() - q[s, a])
             s = s_next
     
@@ -325,8 +408,10 @@ def linear_sarsa(env, max_episodes, eta, gamma, epsilon, seed=None):
             a = random_state.choice(np.flatnonzero(q == q.max()))
         
         done = False
+
         while not done:
             next_features, reward, done = env.step(a)
+
             next_q = next_features.dot(theta)
             if random_state.rand() < epsilon[i]:
                 next_a = random_state.choice(env.n_actions)
@@ -335,7 +420,6 @@ def linear_sarsa(env, max_episodes, eta, gamma, epsilon, seed=None):
             
             theta += eta[i] * (reward + gamma * next_q[next_a] - q[a]) * features[a]
             features, q, a = next_features, next_q, next_a
-    
     return theta
 
 def linear_q_learning(env, max_episodes, eta, gamma, epsilon, seed=None):
@@ -347,6 +431,7 @@ def linear_q_learning(env, max_episodes, eta, gamma, epsilon, seed=None):
     for i in range(max_episodes):
         features = env.reset()
         done = False
+
         while not done:
             q = features.dot(theta)
             if random_state.rand() < epsilon[i]:
@@ -355,12 +440,12 @@ def linear_q_learning(env, max_episodes, eta, gamma, epsilon, seed=None):
                 a = random_state.choice(np.flatnonzero(q == q.max()))
             
             next_features, reward, done = env.step(a)
+
             next_q = next_features.dot(theta)
             delta = reward - q[a]
             delta += gamma * next_q.max() if not done else 0
             theta += eta[i] * delta * features[a]
             features = next_features
-    
     return theta
 
 class FrozenLakeImageWrapper:
@@ -374,9 +459,9 @@ class FrozenLakeImageWrapper:
         self.state_image = {self.env.absorbing_state: np.stack([np.zeros(lake.shape)] + lake_image)}
         
         for state in range(lake.size):
-            agent_pos = np.zeros(lake.shape)
-            agent_pos[np.unravel_index(state, lake.shape)] = 1.0
-            self.state_image[state] = np.stack([agent_pos] + lake_image)
+            agent_pos = np.zeros(lake.shape) ##
+            agent_pos[np.unravel_index(state, lake.shape)] = 1.0 ##
+            self.state_image[state] = np.stack([agent_pos] + lake_image) ##
     
     def encode_state(self, state):
         return self.state_image[state]
@@ -414,9 +499,13 @@ class DeepQNetwork(nn.Module):
         self.optimizer = optim.Adam(self.parameters(), lr=learning_rate)
     
     def forward(self, x):
-        x = torch.tensor(x, dtype=torch.float)
+        # x = torch.tensor(x, dtype=torch.float) //Outdated
+        if hasattr(x, 'clone'):
+            x = x.clone().detach().float()
+        else:
+            x = torch.tensor(x).detach().float()
         x = self.conv_layer(x)
-        x = torch.relu(x)
+        x = torch.relu(x) ##
         x = x.view(x.size(0), -1)
         x = self.fc_layer(x)
         x = torch.relu(x)
@@ -445,7 +534,7 @@ class DeepQNetwork(nn.Module):
         
         target = rewards + gamma * next_q
         
-        loss = nn.MSELoss()(q, target)
+        loss = nn.MSELoss()(q, target) ## 
         
         self.optimizer.zero_grad()
         loss.backward()
@@ -463,8 +552,8 @@ class ReplayBuffer:
         self.buffer.append(transition)
     
     def draw(self, batch_size):
-        indices = self.random_state.choice(len(self.buffer), batch_size, replace=False)
-        return [self.buffer[idx] for idx in indices]
+        indices = self.random_state.choice(len(self.buffer), batch_size, replace=False) ##
+        return [self.buffer[idx] for idx in indices] ##
 
 def deep_q_network_learning(env, max_episodes, learning_rate, gamma, epsilon, batch_size, target_update_frequency, buffer_size, kernel_size, conv_out_channels, fc_out_features, seed):
     random_state = np.random.RandomState(seed)
@@ -478,6 +567,7 @@ def deep_q_network_learning(env, max_episodes, learning_rate, gamma, epsilon, ba
     for i in range(max_episodes):
         state = env.reset()
         done = False
+
         while not done:
             if random_state.rand() < epsilon[i]:
                 action = random_state.choice(env.n_actions)
@@ -489,13 +579,14 @@ def deep_q_network_learning(env, max_episodes, learning_rate, gamma, epsilon, ba
                 action = random_state.choice(best)
             
             next_state, reward, done = env.step(action)
+
             replay_buffer.append((state, action, reward, next_state, done))
             state = next_state
             
             if len(replay_buffer) >= batch_size:
                 transitions = replay_buffer.draw(batch_size)
                 dqn.train_step(transitions, gamma, tdqn)
-        
+
         if (i % target_update_frequency) == 0:
             tdqn.load_state_dict(dqn.state_dict())
     
@@ -521,8 +612,9 @@ def main():
             ['#', '.', '.', '$']]
 
     env = FrozenLake(lake, slip=0.1, max_steps=16, seed=seed)
+    # env = FrozenLake(lake, slip=0.1, max_steps=64, seed=seed) # When using the big lake, the max_steps should be 64, otherwise the algorithm will not converge
+
     gamma = 0.9
-    
     print('# Model-based algorithms')
     print('')
     
@@ -541,7 +633,7 @@ def main():
     print('')
     
     print('## Sarsa')
-    policy, value = sarsa(env, max_episodes, eta=0.5, gamma=gamma, epsilon=0.5, seed=seed)
+    policy, value = sarsa(env, max_episodes, eta=0.3, gamma=gamma, epsilon=0.3, seed=seed)
     env.render(policy, value)
     print('')
     
